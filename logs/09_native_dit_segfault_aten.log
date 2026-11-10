@@ -1,0 +1,89 @@
+﻿# =============================================================================
+# 09_native_dit_segfault_aten.log
+# 失败案例 3：补齐 ATen 后，原生 DiT 在首次前向段错误
+# 时间：2026-11-06 03:19:34 ~ 03:21:07 UTC
+# 前置：InfiniCore 以 --aten=y + hygon + ccl 重新编译成功
+#       → 条件编码器已绕过（混合后端）
+#       → cast_ requires ATen 已解决
+# 本日志即为当前最新状态。
+# =============================================================================
+
+########## 编译验证（本次作业前半段）##########
+aten = true
+hygon-dcu = true
+hygon-arch = gfx936
+ccl = true
+
+[ 99%]: archiving.release libinfiniop-hygon.a
+[ 99%]: linking.release libinfiniop.so
+[100%]: build ok, spent 1360.406s
+[100%]: build ok, spent 49.718s
+
+total 38M
+-rwxrwx--- 51K  libinfiniccl.so
+-rwxrwx--- 13M  libinfinicore_cpp_api.so
+-rwxrwx--- 25M  libinfiniop.so
+-rwxrwx--- 48K  libinfinirt.so
+
+INFINICORE_OK
+CUDA_ALIAS_OK cuda:0
+FROM_TORCH_OK [4, 8]
+
+########## 混合后端运行（崩溃）##########
+Fri Nov  6 03:19:34 UTC 2026
+[model] Backend: InfiniLM
+[model] InfiniLM TP devices: [0, 1, 2, 3, 4, 5, 6, 7]
+[model] HYBRID: torch Qwen3-VL on [0, 1, 2, 3], native DiT on [0, 1, 2, 3, 4, 5, 6, 7]
+Loading weights: 100%|##########| 1058/1058 [00:24<00:00, 43.99it/s]
+
+Fatal Python error: Segmentation fault
+
+Thread 0x00007f4d1eed2740 (most recent call first):
+  File ".../infinilm/infer_engine.py", line 548 in forward_raw
+  File ".../infinilm/multimodal/minimax_h3.py", line 491 in __call__
+  File ".../infinilm/multimodal/minimax_h3.py", line 535 in forward
+  File ".../pkg/InfiniLM/examples/minimax_h3_hybrid.py", line 129 in timed
+  File ".../diffusers/modular_pipelines/minimax_h3/denoise.py", line 123 in __call__
+  File ".../diffusers/modular_pipelines/minimax_h3/denoise.py", line 271 in __call__
+  File ".../diffusers/modular_pipelines/modular_pipeline.py", line 3030 in __call__
+  File ".../pkg/InfiniLM/examples/minimax_h3_hybrid.py", line 737 in main
+
+run_rebuild_aten2.sh: line 124: 1490585 Segmentation fault
+=== exit=139 ===
+
+########## 崩溃位置解读 ##########
+崩溃点在 MiniMaxH3TransformerRunner.forward -> InferEngine.forward_raw，
+即 DiT 主干的第 1 个去噪步前向。
+
+相比 08 日志：
+  08：条件编码器之后就报 "cast_ requires ATen"（干净的 RuntimeError）
+  09：ATen 已开，编码器已绕过，推进到 DiT 真正计算，然后段错误
+
+########## 已排除的假设 ##########
+| 假设                    | 验证方式                    | 结论        |
+|-------------------------|-----------------------------|-------------|
+| 条件编码器是唯一问题    | 混合后端（编码器走 torch）  | 排除，DiT 也不通 |
+| 缺 ATen 是唯一问题      | --aten=y 重编并验证通过      | 排除，仍有段错误 |
+| 实现缺失                | 源码检查（qwen3_vl / DiT）  | 排除        |
+| Python 层参数构造错误   | 检查 _prepare_native_inputs | 未见异常    |
+| 编译不完整（CPU-only）  | libinfiniop.so 25M 体积核对 | 排除        |
+| 设备注册缺失            | device('cuda',0) + from_torch | 排除      |
+
+########## 尚未排除（受限于无 ptrace，无法取 C++ 栈）##########
+1) TP=8 相关
+   - Qwen3-VL: num_key_value_heads=8，TP=8 时每卡仅 1 个 KV 头
+   - DiT: 56 头，TP=8 时每卡 7 头
+   - 官方文档只验证过 --gpus=0,1,2,3（4 卡），未验证 8 卡
+2) 张量尺寸相关
+   - 768×928 的 latent 较大，可能存在越界
+3) dtype / device 约定不一致
+   - "cast_ requires ATen" 提示存在 dtype 转换路径，
+     可能仍有未覆盖的分支
+
+########## 后续计划 ##########
+控制变量实验（TP ∈ {4,8} × 分辨率 ∈ {384×576, 768×928}），
+在 py 层做 4 组对照，看是否存在某一组合可通过。
+若四组全崩，则判定为上游代码在当前版本下不支持海光 8 卡 TP，
+作为已知限制记录，并改用参考实现路径交付。
+
+（该实验因截止时间临近未能完成，如实说明。）

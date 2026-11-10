@@ -1,0 +1,90 @@
+﻿# =============================================================================
+# 01_python_deps.log
+# 依赖安装实录（节选自 InfiniFabric 作业输出，2026-11-04 / 11-05）
+# 结论：整套从厂商源安装成功
+# =============================================================================
+
+########## A. 从厂商源整套安装（--no-deps）##########
+Looking in indexes: https://pypi.sourcefind.cn/release/dtk/
+Collecting accelerate
+  Downloading .../accelerate-1.15.0-py3-none-any.whl (394 kB)
+Collecting httpx2
+  Downloading .../httpx2-2.16.0-py3-none-any.whl (97 kB)
+Collecting httpcore2
+  Downloading .../httpcore2-2.16.0-py3-none-any.whl (85 kB)
+Collecting av
+  Downloading .../av-18.1.0-cp311-abi3-manylinux_2_28_x86_64.whl (35.8 MB)
+    35.8/35.8 MB 1.7 MB/s  0:00:21
+Collecting einops
+  Downloading .../einops-0.8.2-py3-none-any.whl (65 kB)
+Collecting regex
+  Downloading .../regex-2026.9.29-...whl (804 kB)
+Collecting imageio
+  Downloading .../imageio-2.38.1-py3-none-any.whl (328 kB)
+Collecting safetensors
+  Downloading .../safetensors-0.8.0-...whl (516 kB)
+Installing collected packages: transformers, tokenizers, safetensors, regex,
+  imageio, huggingface_hub, httpx2, httpcore2, einops, diffusers, av, accelerate
+
+Successfully installed accelerate-1.15.0 av-18.1.0 diffusers-0.42.1
+  einops-0.8.2 httpcore2-2.16.0 httpx2-2.16.0 huggingface_hub-2.4.0
+  imageio-2.38.1 regex-2026.9.29 safetensors-0.8.0 tokenizers-0.23.3
+  transformers-5.22.1
+
+########## B. 补装 truststore（hub 2.4.0 必需）##########
+Looking in indexes: https://pypi.tuna.tsinghua.edu.cn/simple
+Collecting truststore
+  Downloading .../truststore-0.10.5-py3-none-any.whl (19 kB)
+Successfully installed truststore-0.10.5
+TRUSTSTORE_OK 0.10.5
+
+########## C. 安装厂商版 flash-attn ##########
+Looking in indexes: https://pypi.sourcefind.cn/release/dtk/
+Collecting flash-attn==2.6.1+das.opt1.dtk2604.torch290
+  Downloading .../flash_attn-2.6.1+das.opt1.dtk2604.torch290-...whl (658.9 MB)
+    658.9/658.9 MB 11.7 MB/s  0:00:45
+Successfully installed flash-attn-2.6.1+das.opt1.dtk2604.torch290
+
+########## D. 逐项验证 ##########
+HUB_OK 2.4.0
+RESOLVE_REV_OK
+TF_OK 5.22.1
+QWEN3VL_OK
+DIFF_OK 0.42.1
+modular_pipelines: ['AnimaAutoBlocks', 'AnimaModularPipeline', 'AutoPipelineBlocks',
+  'BlockState', 'ComponentSpec', 'ComponentsManager', 'ConditionalPipelineBlocks',
+  'ConfigSpec', 'Cosmos3DistilledBlocks', ...]
+MODULAR_H3_OK          <-- 关键：厂商版 diffusers 含 minimax_h3 模块
+H3_MODEL_OK
+AV_OK 18.1.0
+
+########## E. flash-attn .so 定位 ##########
+FA_SO_PATH=/public/home/.../pylibs/flash_attn_2_cuda.cpython-311-x86_64-linux-gnu.so
+-rwxrwx--x 1 nobody nogroup 2.0G  flash_attn_2_cuda.cpython-311-x86_64-linux-gnu.so
+
+########## F. SDPA flash 后端实测（关键）##########
+<stdin>:16: UserWarning: sdpa adopt the new interface of flash-attn
+torch 2.9.0 dev 8
+LOAD_SO_OK
+SDPA_FLASH_OK torch.Size([2, 8, 128, 64]) torch.bfloat16
+
+########## G. AFS 用量 ##########
+2.5G  /public/home/.../users/ce9bec...
+
+# =============================================================================
+# 历史失败记录（供参考，说明为什么必须整套从厂商源装）
+# =============================================================================
+# 1) 混装 PyPI 时：
+#    ImportError: tokenizers>=0.22.0,<=0.23.0 is required ...
+#    but found tokenizers==0.23.3.
+#    （PyPI 上不存在 0.23.0 版本，该约束无法满足）
+#
+# 2) hub 2.4.0 + PyPI 的 httpcore：
+#    ModuleNotFoundError: No module named 'httpcore2'
+#
+# 3) 回退到平台自带 hub 0.36 + diffusers 0.42：
+#    ImportError: cannot import name 'resolve_revision' from 'huggingface_hub'
+#
+# 4) 曾尝试 pip install --upgrade transformers huggingface_hub（未加 --no-deps）：
+#    会连带重装 torch(731 MB)，直接撑爆 4 GiB AFS 配额
+# =============================================================================

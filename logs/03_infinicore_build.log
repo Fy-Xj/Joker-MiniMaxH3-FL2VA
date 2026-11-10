@@ -1,0 +1,89 @@
+﻿# =============================================================================
+# 03_infinicore_build.log
+# InfiniCore 编译安装实录（2026-11-06 02:54:58 ~ 03:18:33 UTC）
+# 配置：--hygon-dcu=y --hygon-arch=gfx936 --cuda=/opt/dtk/cuda/cuda --ccl=y --aten=y --ccache=n
+# 结论：编译成功，产物 38 MB，Hygon 算子已包含
+# =============================================================================
+
+########## 1 解压 + 补丁 ##########
+patched pybind11 + torch linkdir 1089
+71:    -- Fix the deprecated warning by using add_orders
+72:    -- add_orders("cuda.env", "hygon.env")
+
+########## 2 唯一一次配置 ##########
+    hygon-dcu = true
+    cuda = /opt/dtk/cuda/cuda
+    aten = true
+    hygon-arch = gfx936
+    ccl = true
+    mode = release
+
+########## 3 编译 ##########
+Fri Nov  6 02:54:58 UTC 2026
+[ 99%]: archiving.release libinfiniop-hygon.a
+[ 99%]: linking.release libinfiniop.so
+[Congratulations!] Now you can install the libraries with "xmake install"
+[ 99%]: linking.release libinfinicore_cpp_api.so
+[100%]: build ok, spent 1360.406s          <-- 主库 22.7 分钟
+
+[ 99%]: linking.release _infinicore.cpython-311-x86_64-linux-gnu.so
+[100%]: build ok, spent 49.718s            <-- Python 扩展 50 秒
+Fri Nov  6 03:18:33 UTC 2026
+
+########## 4 安装 ##########
+installing infinicore_c_api ..
+installing infinicore_c_api to /usr/local ..
+installing infiniutils-test to /public/home/.../infini ..
+install ok!
+installing _infinicore ..
+installing _infinicore to python/infinicore ..
+install ok!
+
+--- 产物体积检查（libinfiniop.so 应 >20M）---
+total 38M
+-rwxrwx--- 51K  libinfiniccl.so
+-rwxrwx--- 13M  libinfinicore_cpp_api.so
+-rwxrwx--- 25M  libinfiniop.so          <-- Hygon 算子全在这里
+-rwxrwx--- 48K  libinfinirt.so
+
+########## 5 更新 AFS ##########
+SO=.../InfiniCore/build/linux/x86_64/release/_infinicore.cpython-311-x86_64-linux-gnu.so
+copied
+INFINICORE_OK
+CUDA_ALIAS_OK cuda:0
+FROM_TORCH_OK [4, 8]
+
+########## 6 AFS ##########
+2.5G  /public/home/.../users/ce9bec...
+
+# =============================================================================
+# 历史失败记录（重要教训）
+# -----------------------------------------------------------------------------
+# 【失败 1】xmake 3.1.2 不可用
+#   xmake: /lib/x86_64-linux-gnu/libc.so.6: version `GLIBC_2.38' not found
+#   -> 平台 glibc 2.35，必须用 xmake 2.9.9
+#
+# 【失败 2】add_orders 缺失（未打 P1 补丁时）
+#   error: ./xmake/hygon.lua:72: attempt to call a nil value (global 'add_orders')
+#   stack traceback:
+#       [./xmake/hygon.lua:72]: in main chunk
+#   -> 注释该行后配置成功
+#
+# 【失败 3】高并发归档竞态
+#   error: cannot remove file build/.objs/infiniop/.../__cpp_xxx.cc.cc No such file
+#   -> 由 -j 64 降为 -j 32，并关闭 ccache 后消失
+#
+# 【失败 4】配置被重置导致 CPU-only 构建（最严重）
+#   现象：
+#     archiving.release libinfinirt-cpu.a
+#     archiving.release libinfiniop-cpu.a
+#     libinfiniop.so   1.4 M        <-- 正常应 25 M
+#   后果：
+#     infinicore.device('cuda', 0)  ->  KeyError: 'cuda'
+#   原因：
+#     脚本里执行了一次不带选项的 `xmake f -y -cv`，
+#     该命令会把全部配置重置为默认值（hygon-dcu=false, aten=false, ccl=false），
+#     随后的 build 变成纯 CPU 构建，并覆盖了 AFS 里正确的 Hygon 库。
+#   教训：
+#     ★ 验证配置只能读 `xmake f` 自身的输出，绝不能为了"再看一眼"再发一次配置命令。
+# =============================================================================

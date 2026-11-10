@@ -1,0 +1,61 @@
+﻿# =============================================================================
+# 08_native_dit_at_required.log
+# 失败案例 2：混合后端推进到 DiT，报 "cast_ requires ATen"
+# 时间：2026-11-06 02:15:54 ~ 02:18:24 UTC
+# 背景：条件编码器回退 PyTorch（见 P4 补丁），DiT 仍走 InfiniLM 原生
+# 此日志是【关键诊断突破】——给出了明确的根因
+# =============================================================================
+
+########## 加载（全部正常）##########
+[model] Backend: InfiniLM
+[model] InfiniLM TP devices: [0, 1, 2, 3, 4, 5, 6, 7]
+[model] HYBRID: torch Qwen3-VL on [0, 1, 2, 3], native DiT on [0, 1, 2, 3, 4, 5, 6, 7]
+Loading weights: 100%|##########| 1058/1058 [03:22<00:00, 5.22it/s]
+
+########## 生成（DiT 前向报错）##########
+  File ".../diffusers/modular_pipelines/minimax_h3/denoise.py", line 271, in __call__
+    components, block_state = self.loop_step(components, block_state, i=i, t=t)
+  File ".../diffusers/modular_pipelines/minimax_h3/denoise.py", line 123, in __call__
+    block_state.noise_pred, block_state.audio_noise_pred = transformer(
+  File ".../infinilm/multimodal/minimax_h3.py", line 535, in forward
+    output = self.runner(
+  File ".../infinilm/multimodal/minimax_h3.py", line 491, in __call__
+    output = self.engine.forward_raw(None, **native_inputs)
+  File ".../infinilm/infer_engine.py", line 548, in forward_raw
+    output = super().forward(
+RuntimeError: RankWorker stopped during run
+
+[2026-11-06 02:18:24.126] [error] [:] [RankWorker{RankInfo: device=HYGON:3,
+  tp_size=8, tp_rank=3, pp_size=1, pp_stage=0, world_size=8, world_rank=3
+  | init_done: true | should_exit: true | has_job: false | job_done: true }]
+  exception during forward: cast_ requires ATen
+
+=== smoke exit=1 ===
+total 0
+
+########## 根因分析 ##########
+InfiniLM 的原生 DiT 适配层使用 `cast_`（原地 dtype 转换）操作，
+该操作在 InfiniCore 中依赖 ATen 后端。
+
+本队最初编译 InfiniCore 时使用 --aten=n：
+  原因：--aten=y 在配置阶段因 add_orders 报错而失败（见 03 日志失败 2）
+        当时被迫降级为 --aten=n
+  问题：P1 补丁修好 add_orders 后，没有回头重新开启 aten
+
+########## 修复动作 ##########
+以 --aten=y 重新编译 InfiniCore：
+  xmake f -y -cv --hygon-dcu=y --hygon-arch=gfx936 \
+    --cuda=/opt/dtk/cuda/cuda --ccl=y --aten=y --ccache=n
+  xmake build -j 32 && xmake build -j 32 _infinicore
+  xmake install && xmake install _infinicore
+
+修复后验证：
+  aten = true / hygon-dcu = true / hygon-arch = gfx936 / ccl = true
+  libinfiniop.so 25M          <-- Hygon 算子已包含
+  INFINICORE_OK
+  CUDA_ALIAS_OK cuda:0
+  FROM_TORCH_OK [4, 8]
+
+修复效果：
+  "cast_ requires ATen" 错误消失，代码推进到 DiT 的真正前向计算，
+  随后出现段错误（见 09 日志）——说明修复有效，但仍有更深层问题。

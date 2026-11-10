@@ -1,0 +1,128 @@
+﻿# =============================================================================
+# 10_native_dit_variants.log
+# 失败案例 4~5：控制变量实验 + dtype 假设验证（全部失败）
+# 时间：2026-11-06 03:46 ~ 03:53（变体实验）/ 07:33 ~ 07:35（dtype 验证）
+# 目的：在无法获取 C++ 栈的前提下，用控制变量法逼近触发条件
+# =============================================================================
+
+# ============================ 第一部分：四组控制变量 ============================
+# 均 124 帧 / 2 步 / 带官方首帧 / --legacy 关闭（原生 DiT）
+
+########## 变体 B：TP=8 + 384x576（小尺寸）##########
+=============== [B-tp8-576] gpus=0,1,2,3,4,5,6,7 extra=--height=384 --width=576 ===============
+Fri Nov  6 03:46:07 UTC 2026
+[generate] Running MiniMax-H3 FL2VA
+  frames: 124   steps: 2   backend: InfiniLM
+UserWarning: sdpa adopt the new interface of flash-attn
+  0%|          | 0/1 [00:00<?, ?it/s]
+run_variants.sh: line 49: 1457709 Segmentation fault
+[B-tp8-576] exit=139
+[B-tp8-576] NO_OUTPUT
+结论：与分辨率无关。像素量降到 1/3.2 仍在同一位置崩溃。
+
+########## 变体 C：TP=4 + 默认尺寸 768x928 ##########
+=============== [C-tp4-928] gpus=0,1,2,3 ===============
+Fri Nov  6 03:48:46 UTC 2026
+Error Code 2 in `cudaMalloc(p_ptr, size)` from mallocDevice at
+  src/infinirt/cuda/infinirt_cuda.cu:458
+[error] [RankWorker{RankInfo: device=HYGON:1, tp_size=4, tp_rank=1, pp_size=1,
+  pp_stage=0, world_size=4, world_rank=1 | init_done: true | should_exit: true}]
+  fatal exception in thread_loop: `infinirtMalloc(&block->ptr, block->size)`
+  failed with error: Internal Error from allocate at
+  src/infinicore/context/allocators/pinnable_block_allocator.cc:77
+
+  File ".../infinilm/multimodal/minimax_h3.py", line 438, in __init__
+    self.engine = InferEngine(
+RuntimeError: RankWorker failed to initialize
+[C-tp4-928] exit=1
+结论：TP=4 在【引擎初始化】阶段就 OOM，尚未进入前向。
+
+########## 变体 D：TP=4 + 384x576 ##########
+=============== [D-tp4-576] gpus=0,1,2,3 ===============
+Fri Nov  6 03:50:57 UTC 2026
+（与 C 完全相同的错误）
+RuntimeError: RankWorker failed to initialize
+[D-tp4-576] exit=1
+结论：初始化失败与分辨率无关 —— 失败发生在与分辨率无关的
+      引擎工作区/权重分配上。
+
+########## 第一部分小结 ##########
+| 变体 | TP | 分辨率      | 结果                       |
+|------|----|-------------|----------------------------|
+| A    | 8  | 768x928     | 段错误（第 1 步去噪）      |
+| B    | 8  | 384x576     | 段错误（同一位置）         |
+| C    | 4  | 768x928     | 引擎初始化 OOM             |
+| D    | 4  | 384x576     | 引擎初始化 OOM（同 C）     |
+
+-> TP=8 是唯一能初始化的配置，而它必崩。
+-> 崩溃与分辨率无关。
+-> TP=4 因 4 张卡同时承载 32B 条件编码器 + 原生 DiT 而内存不足，无法用于对比 TP 效应。
+
+
+# ============================ 第二部分：dtype 假设验证 ============================
+# 假设来源（读代码发现的不对称）：
+#   条件编码器 _prepare_native_inputs 显式把索引张量转 int32：
+#       "input_offsets":   torch.tensor([...], dtype=torch.int32)
+#       "past_kv_lengths": torch.zeros(1, dtype=torch.int32)
+#       "total_kv_lengths":torch.tensor([...], dtype=torch.int32)
+#   DiT runner 则原样透传（_to_infinicore 只做 contiguous()）：
+#       native_inputs = {name: self._to_infinicore(t) ...}
+#   而 diffusers 传入的 video_indices / audio_indices / text_indices /
+#   token_tags / timestep_indices 均为 int64，position_ids 亦被显式构造为 int64。
+# 假设：C++ 按 int32 解释 int64 缓冲区 -> 偏移算错 -> 段错误
+
+########## 第一次尝试：补丁插错位置（语法错误）##########
+  File ".../examples/minimax_h3_cast.py", line 34
+    import os as _os
+    ^^^^^^
+SyntaxError: invalid syntax
+原因：锚点 "MiniMaxH3TransformerRunner," 位于多行 import 的括号内部，
+      注入的模块级代码落在了 import 括号里。
+改进：改锚点为 "def resolve_legacy_device_groups("，并加入 ast.parse 预检查。
+
+########## 修正后：变体 1（int64 -> int32）##########
+--- 语法检查 ---
+SYNTAX_OK
+AST_OK
+[cast] patched MiniMaxH3TransformerRunner._to_infinicore
+
+=============== CAST_MODE=int ===============
+Fri Nov  6 07:33:15 UTC 2026
+  File ".../infinilm/infer_engine.py", line 548 in forward_raw
+  File ".../infinilm/multimodal/minimax_h3.py", line 491 in __call__
+  File ".../infinilm/multimodal/minimax_h3.py", line 535 in forward
+  File ".../diffusers/modular_pipelines/minimax_h3/denoise.py", line 123 in __call__
+run_cast_probe2.sh: line 105: 1675059 Segmentation fault
+=== int exit=139 ===
+NO_OUTPUT (int)
+结论：int32 假设不成立（崩溃位置完全相同）。
+
+########## 修正后：变体 2（int64 -> int32 且 float32 -> bf16）##########
+=============== CAST_MODE=int_float ===============
+Fri Nov  6 07:34:25 UTC 2026
+（崩溃栈与变体 1 完全相同）
+=== int_float exit=139 ===
+NO_OUTPUT (int_float)
+结论：dtype 假设彻底排除，崩溃与传入张量 dtype 无关。
+
+
+# ============================ 累计排除表 ============================
+| 假设                       | 验证方式                              | 结论        |
+|----------------------------|---------------------------------------|-------------|
+| 条件编码器是唯一问题       | 混合后端（编码器走 torch）            | 排除        |
+| 缺 ATen                    | --aten=y 重编 + INFINICORE_OK         | 排除        |
+| 实现缺失                   | 源码检查 qwen3_vl / DiT               | 排除        |
+| 编译不完整（CPU-only）     | libinfiniop.so 25M + CUDA_ALIAS_OK    | 排除        |
+| 设备注册缺失               | device('cuda',0) + from_torch 自检    | 排除        |
+| 张量尺寸越界               | 变体 B（384x576）                     | 排除        |
+| TP=8 特有                  | 变体 C/D（TP=4）                      | 无法验证（OOM）|
+| dtype int64/int32          | int32 cast 修补                       | 排除        |
+| dtype float32/bf16         | + float cast 修补                     | 排除        |
+| input_ids=None 路径        | 需 C++ 栈                             | 未验证      |
+| rotary_cos_sin_cache 约定  | 需 C++ 栈                             | 未验证      |
+| TP=8 切分/集合通信         | 需 C++ 栈                             | 未验证      |
+
+########## 最终结论 ##########
+在容器禁用 ptrace、无法获取 C++ 调用栈的前提下，剩余三个假设均需读 C++ 源码
+逐行排查或由上游协助定位，超出本工程在截止时间内的可完成范围。
+原生 DiT 路径作为已知限制记录，交付改用官方验证的参考实现路径。

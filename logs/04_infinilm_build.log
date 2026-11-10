@@ -1,0 +1,85 @@
+﻿# =============================================================================
+# 04_infinilm_build.log
+# InfiniLM 编译安装实录（2026-11-04 02:30:33 ~ 02:37:17 UTC）
+# 配置：xmake f -y -m release --ccache=n
+# 结论：403 秒编译成功，产物 24 MB
+# =============================================================================
+
+########## 0 环境 ##########
+BASE_OK 8
+FA_SO_PATH=/public/home/.../pylibs/flash_attn_2_cuda.cpython-311-x86_64-linux-gnu.so
+
+########## 1 解压 InfiniLM ##########
+CONTRIBUTING.md  MODELS_ZH.md  csrc  pyproject.toml  scripts  test  xmake.lua
+MODELS.md  README.md  examples  python  setup.py  third_party
+
+########## 2 打补丁（python.module -> python.library）##########
+patched add_packages
+1:-- add_requires("pybind11")
+25:    -- add_packages("pybind11")
+29:    add_rules("python.library", {soabi = true})
+36:    -- add_includedirs("csrc/pybind11", { public = false })
+
+########## 3 配置 ##########
+checking for platform ... linux
+checking for architecture ... x86_64
+checking for cxx11-abi ... no
+
+########## 4 编译 _infinilm ##########
+Wed Nov  4 02:30:33 UTC 2026
+[ 89%]: compiling.release csrc/engine/distributed/tcp_rendezvous.cpp
+[ 90%]: compiling.release csrc/engine/distributed/dist_config.cpp
+[ 90%]: compiling.release csrc/engine/distributed/communication_group.cpp
+[ 91%]: compiling.release csrc/engine/compiler/static_batching_compiler.cpp
+[ 92%]: compiling.release csrc/engine/compiler/paged_compiler.cpp
+[ 93%]: compiling.release csrc/engine/compiler/general_compiler.cpp
+[ 93%]: compiling.release csrc/debug_utils/hooks.cpp
+[ 94%]: compiling.release csrc/config/quant_config.cpp
+[ 95%]: compiling.release csrc/config/model_config.cpp
+[ 96%]: compiling.release csrc/config/config_factory.cpp
+[ 96%]: compiling.release csrc/cache/mamba_cache.cpp
+[ 97%]: compiling.release csrc/cache/kv_cache.cpp
+[ 98%]: compiling.release csrc/pybind11/bindings.cc
+[ 99%]: linking.release _infinilm.cpython-311-x86_64-linux-gnu.so
+[100%]: build ok, spent 403.081s          <-- 6 分 43 秒
+Wed Nov  4 02:37:17 UTC 2026
+
+########## 5 部署 .so ##########
+SO=.../InfiniLM/build/linux/x86_64/release/_infinilm.cpython-311-x86_64-linux-gnu.so
+copied to .../pylibs/infinilm
+-rwxrwx--- 24M  _infinilm.cpython-311-x86_64-linux-gnu.so
+
+########## 6 模型目录 ##########
+FL2VA  Ref2VA  diffusers
+--- diffusers/ 内部 ---
+audio_scheduler
+audio_vae
+model_index.json
+modular_model_index.json
+processor
+scheduler
+text_encoder
+tokenizer
+transformer
+vae
+
+# =============================================================================
+# 历史失败记录
+# -----------------------------------------------------------------------------
+# 【失败 1】xmake 2.9.9 不认识 python.module
+#   error: unknown rule(python.module) in target(_infinilm)!
+#   -> 改为 python.library 后通过
+#
+# 【失败 2】.so 放错位置导致 ModuleNotFoundError
+#   File ".../pylibs/infinilm/lib/__init__.py", line 17, in <module>
+#       import _infinilm
+#   ModuleNotFoundError: No module named '_infinilm'
+#   原因：infinilm 的 lib/__init__.py 用的是【绝对导入】，不是相对导入。
+#         .so 只放在包内 $PL/infinilm/ 时找不到。
+#   -> 必须同时复制到 sys.path 顶层 $PL/ 与包内 $PL/infinilm/
+#
+# 【失败 3】InfiniLM 编译依赖 InfiniCore 已 install
+#   若 $INFINI_ROOT/include 或 lib 缺失，链接阶段失败。
+#   因为 xmake.lua 里写了 add_includedirs(INFINI_ROOT.."/include")
+#   与 add_links("infinicore_cpp_api","infiniop","infinirt","infiniccl")。
+# =============================================================================
