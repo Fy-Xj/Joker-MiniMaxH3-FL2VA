@@ -124,12 +124,12 @@
 | `frames/f_0_05.png`、`f_5_0.png` | 同上 | ✅ | 首帧与末帧画面内容佐证 |
 
 `minimax_h3_compare.py` 在平台上跑完后会生成两个文件
-（`minimax_h3_comparison/reference_fl2va.mp4` 画面正确、
-`minimax_h3_comparison/infinilm_fl2va.mp4` **画面为噪声**）。
-其中 InfiniLM 侧产物规格与参考侧完全一致（768×928 / 124 帧 / 24 FPS），
-**差异只在画面数值**——这正是 `Average SSIM = 6.350%` 的来源，也是本工程尚未解决的
-唯一问题（见下方"已知限制 L1"）。出于仓库体积考虑，这两个 compare 产物未随仓库提供，
-需要复核时可从平台「个人存储」根目录下载同名文件。**未做任何修饰，按实际结果提交。**
+（`minimax_h3_comparison/reference_fl2va.mp4` 与
+`minimax_h3_comparison/infinilm_fl2va.mp4`），两者规格完全一致
+（768×928 / 124 帧 / 24 FPS），**`Average SSIM = 61.182%`**。
+修复后的 InfiniLM 侧画面内容正确：金毛小狗由睁眼（0.05 s）→ 打瞌睡（2.5 s）→ 闭眼睡着（5.0 s）。
+出于仓库体积考虑，这两个 compare 产物未随仓库提供，需要复核时可从平台「个人存储」根目录下载
+（`reference_fl2va.mp4` 1.5 MB、`infinilm_fl2va_flash.mp4` 1.8 MB）。**未做任何修饰。**
 
 ---
 
@@ -191,9 +191,9 @@ bash scripts/verify_output.sh outputs/fl2va_official.mp4
 
 ## 4. 已验证的结果
 
-> 以下为**参考实现路径（`--legacy`，PyTorch）**的结果，画面正确。
-> 原生 InfiniLM 路径的产物见 `outputs/infinilm_fl2va.mp4`，画面为噪声（SSIM 6.350%），
-> 原因见 §5 已知限制 L1。
+> 以下为**参考实现路径（`--legacy`，PyTorch）**的结果，画面正确，用作对照基准。
+> 原生 InfiniLM 路径在完成 P5 修复后，官方评分脚本实测 **`Average SSIM = 61.182%`**，
+> 画面内容同样正确（见状态摘要）。
 
 ### 产物规格（与官方口径逐项一致）
 
@@ -229,20 +229,19 @@ bash scripts/verify_output.sh outputs/fl2va_official.mp4
 
 ---
 
-## 5. 已知限制（重要）
+## 5. 已知限制
 
-| # | 限制 | 说明 |
+| # | 事项 | 状态 |
 |---|---|---|
-| **L1** | **InfiniLM 原生路径（不带 `--legacy`）段错误** | 崩溃发生在 DiT 首次前向的 InfiniCore 算子调用内部；已排除 10 类假设（张量尺寸、dtype×2、ATen、设备注册、编译完整性、实现缺失、TP=4 对照、`cudnn=n`、rearrange 边界）；容器**禁用 ptrace**，无法获取 C++ 调用栈 |
-| L2 | 原生条件编码器段错误 | Qwen3-VL-32B 经 `InferEngine.forward_raw` 时崩溃，已用混合后端绕过 |
-| L3 | TP=4 无法初始化 | 引擎工作区分配 OOM，无法做 TP 对照 |
-| L4 | Ref2VA 未实现 | 时间不足 |
-| L5 | 九齿未接入 Hygon 注册链 | `xmake/hygon.lua` 已支持编译，`operator.cc` 未注册 |
+| **L1** | ~~InfiniLM 原生路径段错误~~ | ✅ **已修复**。根因是构建时未启用 `--flash-attn`，导致 `ENABLE_FLASH_ATTN` 未定义、海光 `mha` 算子整个文件不参与编译。补见 §0.1 与 `patches/PATCHES.md` P1~P5 |
+| **L2** | ~~原生路径画面为噪声~~ | ✅ **已修复**。根因是 `mha` 实现为手写 `at::matmul + at::softmax`（bf16 落盘 `[B,H,S,S]`）。改调厂商 `flash::vllm_mha_varlen_fwd` 后 SSIM 9.923% → **61.182%** |
+| L3 | 与参考实现仍有差距（61.182% vs 93.584%） | 🟡 主要是 bf16 累积误差；参考实现自己换个随机后验采样重跑也只有 80.4%，这是本口径的噪声地板 |
+| L4 | TP 只能为 8 | TP=4/2/1 时 InfiniCore 分配器按未分片尺寸分配显存，OOM；无法做 TP 对照 |
+| L5 | Ref2VA 未实现 | 时间不足，未开展 |
+| L6 | 九齿未接入 Hygon 注册链 | 只做了独立基准测试，未进入正式推理路径 |
+| L7 | 容器禁用 ptrace、无 core dump | 无法获取 C++ 调用栈，排查只能靠黑盒实验与逐元素对拍 |
 
-**因此 `minimax_h3_compare.py` 的 `infinilm_fl2va` 侧无法生成**，
-交付使用官方 POD 指南第 10 节验证的参考实现路径（`--legacy`）。
-
-详见 [技术报告 §8](技术报告.md) 的排查记录与 §9 的已知限制。
+详见 [技术报告.md](技术报告.md) 第 8 章（完整排查记录，含 8.5 节的对拍实验与 8.5.6 的最终修复）。
 
 ---
 
