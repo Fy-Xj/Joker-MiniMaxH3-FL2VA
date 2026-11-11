@@ -150,34 +150,62 @@ git clone --recursive --branch minimax_h3 \
 
 ## 3. 快速复现
 
+### 3.0 前提
+
+| 项 | 要求 |
+|---|---|
+| 硬件 | 8 × 海光 DCU（gfx936），单卡 64 GiB |
+| 镜像 | 平台官方镜像（DTK 26.04 / PyTorch 2.9.0+das.opt1.dtk2604 / Python 3.11.9） |
+| 环境变量 | `source scripts/env.sh`（内部会设好 `FA_SO_PATH`、`PYTHONPATH`、`LD_LIBRARY_PATH`） |
+
+> **说明**：本队全部作业都在 InfiniFabric 平台上完成。`scripts/` 中的脚本依赖两个**平台本地路径**，
+> 换到其他环境时需要改：
+> - `$AFS/upload_src.tar.gz` —— 本队把上游源码（InfiniCore / InfiniLM）与 torchvision 0.24.0 源码
+>   打了个快照放在个人 AFS 里（43 MB，不在本仓库）。**若没有该文件，按 §2 用 git clone 拉取上游即可**，
+>   并把 `SRC_TAR` 环境变量指向你自己的源码包。
+> - `$SHARED/MiniMax-H3` —— 平台共享只读的模型权重目录。
+
+### 3.1 步骤
+
 ```bash
-# 0) 环境变量
+# 0) 环境变量（含 FA_SO_PATH）
 source scripts/env.sh
 
-# 1) 依赖（约 8 分钟）
+# 1) 拉取上游源码（见 §2），放到 $HOME/pkg 下（脚本默认目录）
+mkdir -p $HOME/pkg && cd $HOME/pkg
+git clone --recursive --branch minimax-h3 https://ghfast.top/https://github.com/InfiniTensor/InfiniCore.git
+git clone --recursive --branch minimax_h3 https://ghfast.top/https://github.com/InfiniTensor/InfiniLM.git
+
+# 2) 依赖（约 8 分钟）
 bash scripts/setup_python.sh
 # 期望：MODULAR_H3_OK / H3_MODEL_OK / QWEN3VL_OK / RESOLVE_REV_OK / TV_TRANSFORMS_OK
+#       以及 FROM_NUMPY_OK / SKIMAGE_OK（后者是官方 compare 算 SSIM 用的）
 
-# 2) 应用补丁
+# 3) 应用补丁（P1~P5）
 bash patches/apply_all.sh $HOME/pkg/InfiniCore $HOME/pkg/InfiniLM
-# 期望：APPLIED 4~5 / SKIP 0 / FAIL 0
+# 期望：APPLIED 5~6 / SKIP 0 / FAIL 0
 
-# 3) 编译 InfiniCore（约 23 分钟）
+# 4) 编译 InfiniCore（约 23 分钟）
+#    脚本会自动创建 $AFS/fakeflash 并传入 --flash-attn，这一步不能省！
 bash scripts/build_infinicore.sh
-# 期望：INFINICORE_OK / CUDA_ALIAS_OK / FROM_TORCH_OK
-#       且 libinfiniop.so 必须 >20 MB（否则 Hygon 算子没编进去）
+# 期望：INFINICORE_OK / CUDA_ALIAS_OK / FROM_TORCH_OK / FLASH_MHA_OK
+#   ★ libinfiniop.so 必须 >20 MB（否则 Hygon 算子没编进去）
+#   ★ FLASH_MHA_OK 表示 mha 已改调厂商 flash-attn；若显示 FLASH_MHA_MISSING，运行会退化为
+#     ATen matmul，SSIM 只有 ~10%
 
-# 4) 编译 InfiniLM（约 7 分钟）
+# 5) 编译 InfiniLM（约 7 分钟）
 bash scripts/build_infinilm.sh
 # 期望：INFINILM_OK / ENCODER_IMPORT_OK / RUNNER_IMPORT_OK
 
-# 5) 生成 FL2VA（约 3~11 分钟）
-bash scripts/run_fl2va_legacy.sh fl2va_official.mp4
-# 期望：FINAL_MP4_OK + 规格核查全部 PASS
+# 6) 官方评分脚本（FL2VA）
+bash scripts/run_compare.sh --reuse     # 复用已有 reference，约 10 分钟
+# 或完整跑（自己生成 reference + infinilm，约 22 分钟）
+bash scripts/run_compare.sh
+# 期望：[result] 里 Size/Length 均 PASS，Average SSIM ≈ 61%
 
-# 6) 规格核查
-bash scripts/verify_output.sh outputs/fl2va_official.mp4
-# 或：python3 tests/check_spec.py outputs/fl2va_official.mp4
+# 7) 规格核查（可选）
+bash scripts/verify_output.sh /path/to/video.mp4
+# 或：python3 tests/check_spec.py /path/to/video.mp4
 ```
 
 ### 三条硬约束（踩过的坑）
@@ -186,6 +214,8 @@ bash scripts/verify_output.sh outputs/fl2va_official.mp4
    与官方 `minimax_h3_compare.py` 示例输出一致。手写 384×576 会导致规格不符。
 2. **`--num-frames` 不得小于 120** —— 模型要求 120–360 且为 `17n+5` 形式。
 3. **必须先导出 `FA_SO_PATH`** —— 否则 SDPA 走 math 路径（FL2VA 需 158.57 GiB 显存，必然 OOM）。
+4. **`--flash-attn=` 不能省** —— 缺了它 `ENABLE_FLASH_ATTN` 不定义，海光 `mha` 算子整个文件
+   不参与编译，运行直接段错误。（`build_infinicore.sh` 已自动处理）
 
 ---
 

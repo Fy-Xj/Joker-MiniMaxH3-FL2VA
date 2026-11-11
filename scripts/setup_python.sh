@@ -101,6 +101,20 @@ python3 -m pip install --no-cache-dir --no-deps --no-compile --target="$PL" \
 
 echo ""
 echo "=========================================================="
+echo " 步骤 3b  安装 scikit-image + scipy（官方 compare 算 SSIM 必需）"
+echo "=========================================================="
+echo "  ★ 必须 --no-deps：否则 pip 会把 numpy 升到 2.x，torch.from_numpy 直接报"
+echo "    \"Numpy is not available\"，整个模型都跑不了"
+python3 -m pip install --no-cache-dir --upgrade --target="$PL" \
+  --no-deps --no-compile -i "$TUNA" --trusted-host pypi.tuna.tsinghua.edu.cn \
+  scikit-image scipy tifffile lazy_loader networkx packaging 2>&1 | tail -10
+echo "  校验："
+python3 -c "import numpy; print('    numpy =', numpy.__version__)" 2>&1 | tail -1
+python3 -c "import torch, numpy; torch.from_numpy(numpy.zeros(1)); print('    FROM_NUMPY_OK')" 2>&1 | tail -2
+python3 -c "from skimage.metrics import structural_similarity; print('    SKIMAGE_OK')" 2>&1 | tail -2
+
+echo ""
+echo "=========================================================="
 echo " 步骤 4/5  安装厂商版 flash-attn（SDPA 后端，必需）"
 echo "=========================================================="
 python3 -m pip install --no-cache-dir --upgrade --target="$PL" \
