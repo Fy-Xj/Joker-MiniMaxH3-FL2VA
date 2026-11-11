@@ -14,22 +14,72 @@
 
 ## 状态摘要（先说结论）
 
-**官方评分脚本已完整运行通过（exit=0），规格两项 PASS：**
+**官方评分脚本完整运行通过（exit=0），规格两项 PASS，画面正确性已修复：**
 
 ```
 [result] MiniMax-H3 video comparison
+
   FL2VA
     Size:         PASS (PyTorch 768x928, InfiniLM 768x928)
     Length:       PASS (PyTorch 124 frames, InfiniLM 124 frames)
-    Average SSIM: 6.350%
+    Average SSIM: 61.182%
 ```
 
-**性能：InfiniLM 比 PyTorch 快 26%**（端到端 605.213 s → 478.870 s；DiT 去噪 1.293×）。
+**性能：DiT 去噪比 PyTorch 快 2.82 倍**（49 次调用 530.820 s → 188.080 s）。
 
-**未解决**：原生 InfiniLM 路径画面数值不正确（SSIM 6.350%，官方示例 93.584%）——
-首帧基本正确（SSIM_f0 ≈ 89%），后续帧逐帧偏离至噪声。崩溃问题已修复
-（根因：构建时未启用 `--flash-attn`，海光 `mha` 算子未被编译），剩余为数值精度问题。
-已排除 10 类假设，详见 [技术报告.md §8](技术报告.md)。
+### 关键修复：mha 用错了实现
+
+海光后端的 `mha_flashattn_hygon.cc` 文件名带 flashattn，实际却是手写的
+`at::matmul + at::softmax`，会把 `[B,H,S,S]` 注意力矩阵以 bf16 落盘
+（S=26448 时每卡约 9.8 GB），logits 只有 8 位尾数，精度不足并随 49 步迭代放大，
+最终输出是棋盘状噪声。
+
+改成调用厂商 flash-attn 的 `flash::vllm_mha_varlen_fwd`（与 PyTorch 参考侧同一 kernel）后：
+
+| | 修复前 | 修复后 |
+|---|---|---|
+| Average SSIM | 9.923% | **61.182%** |
+| DiT 单次前向 | 8.380 s | **3.812 s** |
+| DiT 49 次调用 | 410.605 s | **188.080 s** |
+| 输出视频 | 棋盘状噪声 | 金毛小狗睁眼→打瞌睡→睡着 |
+
+补丁见 `patches/PATCHES.md` 的 **P5**，实现在 `patches/apply_all.sh`。
+
+### 其它已完成
+
+- 8 卡（gfx936 × 8）编译与运行全部打通；InfiniCCL 张量并行通信正常
+- 定位并修复原生路径段错误（根因：未启用 `--flash-attn`，海光 `mha` 算子整个文件未编译）
+- 逐元素对拍验证：DiT 输出与 PyTorch 相关系数 **0.999714**，
+  条件编码器逐 token 中位数 **0.9996**，接口层（mrope/RoPE/AdaLN/拼装）全部正确
+
+### 剩余差距
+
+61.182% 与参考实现的 93.584% 之间还差一段，主要是 bf16 累积误差
+（参考实现自己换个随机后验采样重跑，SSIM 也只有 80.4%，这是本口径的噪声地板）。
+详见 [技术报告.md](技术报告.md) 第 8、9 章。
+
+---
+
+## 0.1 本队对上游仓库的全部改动（合规核验入口）
+
+按初赛要求，本队**对上游仓库所做的全部修改**集中放在本仓库的 `changes/` 目录，
+逐文件对应上游路径，可直接与本仓库 commit 一起核验：
+
+| 子目录 | 上游仓库 | 上游分支 | 改动文件 |
+|---|---|---|---|
+| [`changes/InfiniCore/`](changes/InfiniCore/) | `InfiniTensor/InfiniCore` | `minimax-h3` | 4 个（含最关键的 `mha` 修改） |
+| [`changes/InfiniLM/`](changes/InfiniLM/) | `InfiniTensor/InfiniLM` | `minimax_h3` | 2 个 |
+
+**九齿（ninetoothed）**：本次**未修改**其仓库。只用九齿 DSL 做了 `timestep_embedding`
+的独立基准测试（gfx936 2.92×、gfx906 2.99×，精度无损），但未接入 Hygon 后端注册链，
+**未进入正式推理路径**，故无对应改动仓库。
+
+**上游 commit 说明**：平台无法直连 github.com，上游源码经镜像
+`https://ghfast.top/https://github.com/InfiniTensor/...` 于 2026-11-03 拉取，
+镜像 clone 未保留 `.git`，故无法记录上游 commit；`changes/` 中为修改后的完整文件，
+可与上游逐文件对照。
+
+详见 [`changes/README.md`](changes/README.md)。
 
 ---
 

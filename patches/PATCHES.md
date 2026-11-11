@@ -170,3 +170,62 @@ bash patches/apply_patches.sh <InfiniCore目录> <InfiniLM目录>
 | 未修改 InfiniCore 算子实现 | 未发现算子级缺陷；`cast_ requires ATen` 属编译配置问题，已通过 `--aten=y` 解决 |
 | 未修改 InfiniLM C++ 推理引擎 | 段错误原因未能定位（容器禁用 ptrace，无法取 C++ 栈） |
 | 未接入九齿到 Hygon 后端注册链 | 时间不足；`xmake/hygon.lua` 已支持编译 `build/ninetoothed/*.c`，仅缺 `operator.cc` 侧注册 |
+
+---
+
+## P5. InfiniCore：mha 改调厂商 flash-attn varlen 内核（**最关键的一处**）
+
+**文件**：`src/infinicore/ops/multi_head_attention/hygon/mha_flashattn_hygon.cc`
+
+### 问题
+
+这个文件名是 `mha_flashattn_hygon.cc`，但实现里**没有任何 flash attention**：
+
+```cpp
+auto attn_weight = at::matmul(q.permute({0,2,1,3}), k_attn.permute({0,2,3,1})) * scale;
+auto attn = at::softmax(attn_weight, -1);
+auto result = at::matmul(attn, v_attn.permute({0,2,1,3})).permute({0,2,1,3});
+```
+
+它会把 `[B,H,S,S]` 的注意力矩阵**以 bf16 真实算出来并落盘**：
+
+- S = 26448，TP=8 时每 rank 7 个 head → 7 × 26448² × 2 B ≈ **9.8 GB / 卡**
+- 中间的 logits 只有 **8 位尾数**（bf16），softmax 精度不足
+- 扩散采样要迭代 49 次，每步误差累积 → 最终画面变成棋盘状噪声
+
+实测：`Average SSIM = 9.923%`，且 DiT 单次前向要 **8.38 s**。
+
+### 修改
+
+改为调用厂商 `flash_attn_2_cuda*.so` 提供的 varlen 内核（与 PyTorch 参考侧同一 kernel）：
+
+```cpp
+auto res = flash::vllm_mha_varlen_fwd(
+    q_s, k_s, v_s, out_opt, cu, cu,
+    seqused_k_opt, leftpad_k_opt, block_table_opt, alibi_opt,
+    total, total, 0.0f, scale,
+    /*zero_tensors=*/false, /*is_causal=*/is_causal,
+    -1, -1, 0.0f, false, std::nullopt);
+```
+
+要点：
+
+1. 全自注意力对应 **varlen 只有一个序列**：`cu_seqlens = [0, B*S]`（int32，与 q 同设备）
+2. 张量从 `[B,S,H,D]` 重排为 varlen 要求的 `[B*S, H, D]`
+3. 注意该函数第 4~10 个参数是**非 const 引用**，必须传具名变量而不能传 `std::nullopt`
+4. 用 try/catch 包住，失败时回退到 `at::scaled_dot_product_attention`
+
+### 效果
+
+| 指标 | 修改前 | 修改后 |
+|---|---|---|
+| **Average SSIM** | 9.923% | **61.182%** |
+| DiT 单次前向 | 8.380 s | **3.812 s** |
+| DiT 49 次调用 | 410.605 s | **188.080 s** |
+| 输出视频大小 | 5.1 MB（噪声压不动） | **1.8 MB** |
+
+画面内容：修复前是棋盘状噪声；修复后金毛小狗由睁眼（0.05 s）→ 打瞌睡（2.5 s）→ 闭眼睡着（5.0 s），与 prompt 一致。
+
+### 为什么能对上
+
+PyTorch 参考侧走 `torch.nn.functional.scaled_dot_product_attention`，在海光上会被 diffusers 分派到厂商 flash-attn；改完之后两边用**同一个 kernel**，数值路径一致，残差从 2.5% 降到 bf16 级别。

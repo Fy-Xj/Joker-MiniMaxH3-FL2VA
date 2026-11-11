@@ -193,6 +193,86 @@ PY
 fi
 
 # ---------------------------------------------------------------------------
+# P5: InfiniCore mha 改调厂商 flash-attn varlen 内核
+#     这是最关键的一处修复：Average SSIM 从 9.923% 提升到 61.182%
+#     原实现文件名是 flashattn，实际是手写的 matmul+softmax，
+#     会把 [B,H,S,S] 注意力矩阵以 bf16 落盘（S=26448 时每卡约 9.8GB），
+#     logits 只有 8 位尾数，精度不足并随 49 步迭代累积放大。
+# ---------------------------------------------------------------------------
+echo "[P5] InfiniCore : mha 改调 flash::vllm_mha_varlen_fwd"
+MHA="$1/src/infinicore/ops/multi_head_attention/hygon/mha_flashattn_hygon.cc"
+if [ ! -f "$MHA" ]; then
+  note "找不到 $MHA"
+  FAIL=$((FAIL+1))
+elif grep -q "vllm_mha_varlen_fwd" "$MHA" 2>/dev/null; then
+  note "已应用，跳过"
+  SKIP=$((SKIP+1))
+else
+  python3 - "$MHA" <<'PY'
+import sys
+p = sys.argv[1]
+s = open(p, encoding="utf-8").read()
+old = """    auto attn_weight = at::matmul(q.permute({0, 2, 1, 3}), k_attn.permute({0, 2, 3, 1})) * scale;
+    if (is_causal) {
+        auto mask = at::tril(at::ones_like(attn_weight), -1).flip({-2, -1});
+        auto neg_inf = at::full_like(attn_weight, -std::numeric_limits<float>::infinity());
+        attn_weight = at::where(mask == 1, neg_inf, attn_weight);
+    }
+    auto attn = at::softmax(attn_weight, -1);
+    auto result = at::matmul(attn, v_attn.permute({0, 2, 1, 3})).permute({0, 2, 1, 3});"""
+new = """    // P5: 优先用厂商 flash-attn 的 varlen 内核（与 PyTorch 参考侧同一 kernel），
+    // 失败时回退 ATen SDPA。全自注意力 = varlen 只有一个序列，cu_seqlens=[0, B*S]。
+    auto q_h = q.permute({0, 2, 1, 3});
+    auto k_h = k_attn.permute({0, 2, 1, 3});
+    auto v_h = v_attn.permute({0, 2, 1, 3});
+    at::Tensor result_h;
+    bool used_flash = false;
+    try {
+        const int64_t nb = q_h.size(0);
+        const int64_t nq = q_h.size(2);
+        const int64_t total = nb * nq;
+        auto q_s = q_h.reshape({total, q_h.size(1), q_h.size(3)}).contiguous();
+        auto k_s = k_h.reshape({total, k_h.size(1), k_h.size(3)}).contiguous();
+        auto v_s = v_h.reshape({total, v_h.size(1), v_h.size(3)}).contiguous();
+        auto opts = at::TensorOptions().dtype(at::kInt).device(q.device());
+        auto cu = at::tensor({static_cast<int64_t>(0), total}, opts);
+        std::optional<at::Tensor> out_opt = std::nullopt;
+        std::optional<at::Tensor> seqused_k_opt = std::nullopt;
+        std::optional<const at::Tensor> leftpad_k_opt = std::nullopt;
+        std::optional<at::Tensor> block_table_opt = std::nullopt;
+        std::optional<at::Tensor> alibi_opt = std::nullopt;
+        auto res = flash::vllm_mha_varlen_fwd(
+            q_s, k_s, v_s,
+            out_opt,
+            cu, cu,
+            seqused_k_opt, leftpad_k_opt, block_table_opt, alibi_opt,
+            static_cast<int>(total), static_cast<int>(total),
+            0.0f, static_cast<float>(scale),
+            false, is_causal,
+            -1, -1, 0.0f, false, std::nullopt);
+        if (!res.empty() && res[0].defined()) {
+            result_h = res[0].reshape({nb, nq, q_h.size(1), q_h.size(3)});
+            used_flash = true;
+        }
+    } catch (...) {
+        used_flash = false;
+    }
+    if (!used_flash) {
+        result_h = at::scaled_dot_product_attention(
+            q_h, k_h, v_h,
+            std::nullopt, 0.0, is_causal,
+            std::optional<double>(static_cast<double>(scale)));
+    }
+    auto result = result_h.permute({0, 2, 1, 3});"""
+if old not in s:
+    print("  FAIL 未匹配到原始注意力代码块"); sys.exit(1)
+open(p, "w", encoding="utf-8").write(s.replace(old, new, 1))
+print("  APPLIED ->", p)
+PY
+  if [ $? -eq 0 ]; then OK=$((OK+1)); else FAIL=$((FAIL+1)); fi
+fi
+
+# ---------------------------------------------------------------------------
 echo ""
 echo "================ 汇总 ================"
 echo "  APPLIED : $OK"
