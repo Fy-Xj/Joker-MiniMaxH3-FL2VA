@@ -1,0 +1,76 @@
+﻿# =============================================================================
+# 02_torchvision_build.log
+# torchvision 0.24.0 源码编译实录（2026-11-04 09:05:34 ~ 09:09:56 UTC）
+# 结论：4 分 22 秒编译成功，nms 算子已注册
+# =============================================================================
+
+########## 0 准备 ##########
+TDIR=/public/home/.../users/ce9bec...
+vision-0.24.0  vision-0.24.0.tar.gz
+--- 补 wheel 工具 ---
+Successfully installed wheel-0.48.0
+
+########## 1 编译 torchvision 0.24.0 ##########
+Tue Nov  3 09:05:34 UTC 2026
+adding 'torchvision/transforms/v2/functional/__init__.py'
+adding 'torchvision/transforms/v2/functional/_augment.py'
+adding 'torchvision/transforms/v2/functional/_color.py'
+adding 'torchvision/transforms/v2/functional/_deprecated.py'
+adding 'torchvision/transforms/v2/functional/_geometry.py'
+adding 'torchvision/transforms/v2/functional/_meta.py'
+adding 'torchvision/transforms/v2/functional/_misc.py'
+adding 'torchvision/transforms/v2/functional/_temporal.py'
+adding 'torchvision/transforms/v2/functional/_type_conversion.py'
+adding 'torchvision/transforms/v2/functional/_utils.py'
+adding 'torchvision/tv_tensors/__init__.py'
+adding 'torchvision/tv_tensors/_bounding_boxes.py'
+adding 'torchvision/tv_tensors/_dataset_wrapper.py'
+adding 'torchvision/tv_tensors/_image.py'
+adding 'torchvision/tv_tensors/_keypoints.py'
+adding 'torchvision/tv_tensors/_mask.py'
+adding 'torchvision/tv_tensors/_torch_function_helpers.py'
+adding 'torchvision/tv_tensors/_tv_tensor.py'
+adding 'torchvision/tv_tensors/_video.py'
+adding 'torchvision-0.24.0.dist-info/licenses/LICENSE'
+adding 'torchvision-0.24.0.dist-info/METADATA'
+adding 'torchvision-0.24.0.dist-info/WHEEL'
+adding 'torchvision-0.24.0.dist-info/top_level.txt'
+adding 'torchvision-0.24.0.dist-info/RECORD'
+removing build/bdist.linux-x86_64/wheel
+Tue Nov  3 09:09:56 UTC 2026
+
+total 1.8M
+-rw-rw---- 1 ifab_ce9bec115752 ifab_ce9bec115752 1.8M Nov  3 09:09
+  torchvision-0.24.0-cp311-cp311-linux_x86_64.whl
+
+########## 2 安装 wheel ##########
+installing dist/torchvision-0.24.0-cp311-cp311-linux_x86_64.whl
+Successfully installed torchvision-0.24.0
+
+########## 3 验证 ##########
+torch 2.9.0 6.3.26093
+TV_OK 0.24.0 /public/home/.../pylibs/torchvision/__init__.py
+nms: True
+transforms: torchvision.transforms.functional
+
+########## 4 模拟 processor 关键路径 ##########
+AutoProcessor OK
+Qwen3VLProcessor OK
+
+########## 5 AFS ##########
+2.3G  /public/home/.../users/ce9bec...
+
+# =============================================================================
+# 编译参数（关键）
+#   BUILD_VERSION=0.24.0
+#   MAX_JOBS=32
+#   FORCE_CUDA=1
+#   TORCHVISION_USE_NVJPEG=0
+#   TORCHVISION_USE_VIDEO_CODEC=0
+#   TORCHVISION_USE_FFMPEG=0
+# 说明：
+#   - 关闭 NVJPEG / VideoCodec / FFMPEG 可显著减少依赖与编译时间，
+#     本赛题的媒体编码由 av 库负责，不需要 torchvision 的 IO 组件。
+#   - nms: True 是关键判据：通用 wheel 未注册该算子，
+#     会导致 Qwen3-VL processor 创建失败。
+# =============================================================================

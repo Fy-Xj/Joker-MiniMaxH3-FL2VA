@@ -1,0 +1,76 @@
+﻿# =============================================================================
+# 07_native_encoder_segfault.log
+# 失败案例 1：InfiniLM 原生路径在【条件编码器】处段错误
+# 时间：2026-11-04 03:33:10 ~ 03:36:30 UTC
+# 命令：不带 --legacy（严格按文档）
+#   python examples/minimax_h3.py fl2va --model-path=.../diffusers
+#     --text="A dog falls asleep" --first-frame=Golde33443.png
+#     --gpus=0,1,2,3,4,5,6,7 --num-frames=124 --steps=2
+# =============================================================================
+
+########## 加载阶段（全部正常）##########
+[2026-11-04 03:35:48.482] [info] [:] Intra-node TP communicator established:
+  node_rank=0, local_ranks=8
+[model] Loading modular components from: /public/home/.../MiniMax-H3/diffusers
+[model] Backend: InfiniLM
+[model] InfiniLM TP devices: [0, 1, 2, 3, 4, 5, 6, 7]
+load weights ......
+Found index file: .../text_encoder/model.safetensors.index.json. Loading shards by index.
+Processing files: 100%|##########| 14/14 [00:09<00:00, 1.49it/s]
+load weights over! 10005.890846252441 ms      <-- 条件编码器加载完成
+
+load weights ......
+No index file found. Scanning all safetensors files...
+Processing: diffusion_pytorch_model-00001-of-00014.safetensors
+...（共 14 分片）
+load weights over! 9757.009506225586 ms       <-- DiT 加载完成
+
+Loading checkpoint shards: 100%|##########| 3/3 [00:01<00:00, 1.76s/it]   <-- VAE
+
+########## 生成阶段（崩溃）##########
+[generate] Running MiniMax-H3 FL2VA
+  text:            A dog falls asleep
+  first frame:     True
+  frames:          124
+  steps:           2
+  backend:         InfiniLM
+
+Fatal Python error: Segmentation fault
+
+Thread 0x00007f4d1eed2740 (most recent call first):
+  File ".../infinilm/infer_engine.py", line 548 in forward_raw
+  File ".../infinilm/multimodal/minimax_h3.py", line 397 in encode
+  File ".../infinilm/multimodal/minimax_h3.py", line 137 in forward
+  File ".../pkg/InfiniLM/examples/minimax_h3.py", line 129 in timed
+  File "/usr/local/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1786 in _call_impl
+  File ".../diffusers/modular_pipelines/minimax_h3/encoders.py", line 91 in get_qwen3vl_prompt_embeds
+  File ".../diffusers/modular_pipelines/minimax_h3/encoders.py", line 304 in __call__
+  File ".../diffusers/modular_pipelines/modular_pipeline.py", line 3030 in __call__
+  File ".../pkg/InfiniLM/examples/minimax_h3.py", line 731 in main
+
+run_infinilm.sh: line 57: 804902 Segmentation fault
+
+########## 崩溃位置解读 ##########
+崩溃点在 MiniMaxH3ConditionEncoder.forward -> encode -> InferEngine.forward_raw，
+即 Qwen3-VL-32B 条件编码器经 InfiniLM 的 LLM 引擎做 C++ 前向时崩溃。
+权重加载、InfiniCCL 通信初始化、VAE 加载均正常。
+
+########## 已做的排除工作 ##########
+1) 检查是否实现缺失 -> 否
+   csrc/models/qwen3_vl/ 目录完整：
+     qwen3_vl_attention.cpp / qwen3_vl_text_model.cpp
+     qwen3_vl_for_conditional_generation.cpp（含 forward_with_deepstack）
+   注册：INFINILM_REGISTER_...(qwen3_vl, Qwen3VLForConditionalGeneration, ...)
+   InfiniCore 亦有 mrope / conv 算子。
+2) 检查 config 完整性 -> 完整
+   model_type: qwen3_vl
+   text_config: 64 层 / hidden 5120 / 64 头 / kv 头 8 / max_pos 262144
+   vision_config: depth=27 hidden=1152 patch=16 merge=2 out=5120
+3) 尝试 gdb 取 C++ 栈 -> 失败
+   warning: ptrace: Operation not permitted
+   （容器禁用 ptrace，gdb 无法 attach）
+4) 设置 PYTHONFAULTHANDLER=1 -> 仅得到 Python 栈（即上方内容）
+
+########## 结论 ##########
+属上游 C++ 层的段错误，无法在本工程范围内修复。
+后续通过"混合后端"绕过该编码器（见 09_native_dit_segfault_aten.log）。

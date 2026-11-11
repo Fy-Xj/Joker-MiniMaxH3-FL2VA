@@ -1,0 +1,110 @@
+﻿# =============================================================================
+# 05_fl2va_legacy_50step.log
+# FL2VA 正式生成实录（参考实现路径，2026-11-05 08:15:09 ~ 08:26:46 UTC）
+# 命令：python examples/minimax_h3.py fl2va --model-path=.../diffusers
+#        --text="A dog falls asleep" --first-frame=Golde33443.png
+#        --gpus=0,1,2,3,4,5,6,7 --legacy
+#        --legacy-text-gpus=0,1,2,3 --legacy-transformer-gpus=4,5,6,7
+#        --num-frames=124 --steps=50
+#        （刻意不传 --height/--width，由首帧推导尺寸）
+# 结论：成功，768×928 / 124 帧 / 24 FPS / 5.175 s / H.264 + AAC
+# =============================================================================
+
+########## 0 官方首帧图 ##########
+IMG=/public/home/.../Golde33443.png
+image size: (800, 965) RGB
+
+########## 1 加载 ##########
+[model] Loading modular components from: /public/home/aclsylqidf/shared/MiniMax-H3/diffusers
+[model] Loading fl2va weights from:       /public/home/aclsylqidf/shared/MiniMax-H3/diffusers
+[model] Backend: legacy PyTorch
+[model] Qwen3-VL devices: [0, 1, 2, 3]
+[model] H3 transformer devices: [4, 5, 6, 7]
+
+Loading weights: 100%|##########| 1058/1058 [00:39<00:00, 26.46it/s]
+Loading checkpoint shards: 100%|##########| 14/14 [00:16<00:00, 1.14s/it]
+[model] Routing legacy proj_out output to cuda:4
+[model] Routing legacy audio_proj_out output to cuda:4
+Loading checkpoint shards: 100%|##########| 3/3 [00:02<00:00, 1.27s/it]
+
+（VAE float32 与 dtype 提示，属预期行为）
+/usr/local/lib/python3.11/site-packages/torch/nn/utils/weight_norm.py:144:
+  FutureWarning: `torch.nn.utils.weight_norm` is deprecated
+There are modules in AutoencoderKLMiniMaxH3 that should be kept in float32:
+  ['encoder','quant_conv','norm1','norm2','norm_out','scale1','scale2']
+There are modules in AutoencoderKLMiniMaxH3Audio that should be kept in float32:
+  ['encoder','decoder','pre_block','dec_in_proj','mean_proj','logs_proj']
+[model] Diffusers execution device: cuda:1
+
+########## 2 生成 ##########
+[generate] Running MiniMax-H3 FL2VA
+  text:            A dog falls asleep
+  first frame:     True
+  last frame:      False
+  frames:          124
+  steps:           50
+  backend:         legacy PyTorch
+
+（FlashAttention 生效的标志）
+/usr/local/lib/python3.11/site-packages/transformers/integrations/sdpa_attention.py:174:
+  UserWarning: sdpa adopt the new interface of flash-attn
+  (Triggered internally at .../cutlassfa_adapter.h:145.)
+  attn_output = torch.nn.functional.scaled_dot_product_attention(
+
+  0%|          | 0/49 [00:00<?, ?it/s]
+  2%|#         | 1/49 [00:16<13:19, 16.65s/it]
+  4%|#         | 2/49 [00:27<10:17, 13.15s/it]
+ 10%|##        | 5/49 [00:59<08:13, 11.23s/it]
+ 20%|####      | 10/49 [01:53<07:00, 10.78s/it]
+ 30%|######    | 15/49 [02:46<06:04, 10.72s/it]
+ 40%|########  | 20/49 [03:40<05:10, 10.70s/it]
+ 50%|##########| 25/49 [04:33<04:17, 10.71s/it]
+ 60%|##########| 30/49 [05:27<03:23, 10.70s/it]
+ 70%|########  | 35/49 [06:20<02:29, 10.71s/it]
+ 80%|##########| 40/49 [07:14<01:36, 10.71s/it]
+ 90%|######### | 45/49 [08:07<00:42, 10.70s/it]
+100%|##########| 49/49 [08:50<00:00, 10.70s/it]
+
+（RMSNorm dtype 提示，属预期行为，不影响结果）
+/usr/local/lib/python3.11/site-packages/torch/nn/functional.py:3095:
+  UserWarning: Mismatch dtype between input and weight: input dtype = float,
+  weight dtype = c10::BFloat16, Cannot dispatch to fused implementation.
+
+Encoding video chunks: 100%|##########| 1/1 [00:00<00:00, 1.10it/s]
+
+########## 3 性能剖析 ##########
+[timing] MiniMax-H3 profile
+  model.pipeline_create                            0.932 s
+  model.condition_encoder_create_and_load         15.294 s
+  model.transformer_create_and_load               15.602 s
+  model.remaining_components_create_and_load       9.309 s
+  input.files_and_references                       0.401 s
+  input.arguments                                  0.000 s
+  compute.condition_encoder                        6.747 s
+  input.video_vae_encode                           0.459 s
+  input.audio_vae_encode                           0.000 s (0 calls)
+  compute.h3_transformer                         530.422 s (49 calls, 10.825 s/call)
+  output.video_vae_decode                         17.365 s
+  output.audio_vae_decode                          1.306 s
+  generation.pipeline_total                      560.627 s
+  output.media_encode                              4.162 s
+  total.end_to_end                               606.349 s
+  pipeline.other_preprocess_scheduler              4.328 s
+
+[done] Saved to: .../out/fl2va_official.mp4
+Thu Nov  5 08:26:46 UTC 2026
+
+########## 4 产物 ##########
+total 1.5M
+-rw-rw---- 1.5M fl2va_official.mp4
+OFFICIAL_MP4_OK
+copied_to_AFS
+
+########## 5 规格核查（av 库）##########
+duration(s): 5.175
+[video] h264 768x928 fps=24 pix=yuv420p
+[audio] aac 32000Hz ch=2
+decoded frames = 124
+
+########## 6 AFS ##########
+2.5G  /public/home/.../users/ce9bec...
