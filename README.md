@@ -12,6 +12,11 @@
 
 ---
 
+> **评审请看 [`运行说明.md`](运行说明.md)** —— 一条命令 `bash scripts/run_all.sh` 复现全部结果（约 45 分钟）。
+> 完整可编译源码在 [`source/`](source/)，逐行改动见 [`changes/`](changes/) 与 `source/*.patch`。
+
+---
+
 ## 状态摘要（先说结论）
 
 **官方评分脚本完整运行通过（exit=0），规格两项 PASS，画面正确性已修复：**
@@ -80,6 +85,28 @@
 可与上游逐文件对照。
 
 详见 [`changes/README.md`](changes/README.md)。
+
+### 0.2 完整可编译源码（推荐用这个复现）
+
+除了上述"仅含改动文件"的 `changes/`，本仓库 **`source/`** 目录还提供**打了补丁的完整源码包**，
+解压即可编译，无需再找上游版本：
+
+| 文件 | 说明 |
+|---|---|
+| [`source/InfiniCore-patched.tar.gz`](source/InfiniCore-patched.tar.gz) | InfiniCore 完整源码，已应用 P1/P2/P5 |
+| [`source/InfiniLM-patched.tar.gz`](source/InfiniLM-patched.tar.gz) | InfiniLM 完整源码，已应用 P3/P4 |
+| [`source/changes-InfiniCore.patch`](source/changes-InfiniCore.patch) | 与上游的逐行 diff |
+| [`source/changes-InfiniLM.patch`](source/changes-InfiniLM.patch) | 与上游的逐行 diff |
+
+```bash
+mkdir -p $HOME/pkg
+tar -xzf source/InfiniCore-patched.tar.gz -C $HOME/pkg
+tar -xzf source/InfiniLM-patched.tar.gz  -C $HOME/pkg
+bash scripts/setup_python.sh && bash scripts/build_infinicore.sh && bash scripts/build_infinilm.sh
+bash scripts/run_compare.sh
+```
+
+详见 [`source/README.md`](source/README.md)。
 
 ---
 
@@ -165,7 +192,34 @@ git clone --recursive --branch minimax_h3 \
 >   并把 `SRC_TAR` 环境变量指向你自己的源码包。
 > - `$SHARED/MiniMax-H3` —— 平台共享只读的模型权重目录。
 
-### 3.1 步骤
+**torchvision 说明**：Qwen3-VL 的 processor 依赖 `torchvision`（且需要 `torchvision.ops.nms`）。
+`setup_python.sh` 会先尝试从厂商源装 wheel，失败再回退源码编译（源码需 `$AFS/upload_src.tar.gz`）。
+若两者都不可用，可从 <https://github.com/pytorch/vision> 取 v0.24.0 源码，
+或设置 `SRC_TAR` 指向含 `torchvision-src` 的压缩包后重跑该脚本。
+**torchvision 缺失会导致 processor 为 None，即使编译成功也无法推理。**
+
+### 3.1 一句话复现（推荐）
+
+```bash
+bash scripts/run_all.sh
+```
+
+依次完成：解压 `source/*.tar.gz` 完整源码 → 装依赖 → 编译 InfiniCore → 编译 InfiniLM →
+跑官方评分脚本。**任一步失败会立刻停下并打印原因。** 全程约 45 分钟。
+
+期望输出：
+
+```
+[result] MiniMax-H3 video comparison
+  FL2VA
+    Size:         PASS (PyTorch 768x928, InfiniLM 768x928)
+    Length:       PASS (PyTorch 124 frames, InfiniLM 124 frames)
+    Average SSIM: 61.182%
+```
+
+### 3.1.1 分步执行（想单独控制时）
+
+
 
 ```bash
 # 0) 环境变量（含 FA_SO_PATH）

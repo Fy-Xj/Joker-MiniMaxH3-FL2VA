@@ -1,0 +1,44 @@
+--- a/xmake.lua
++++ b/xmake.lua
+@@ -1,4 +1,4 @@
+-add_requires("pybind11")
++-- add_requires("pybind11")
+ 
+ set_toolchains("gcc")
+ 
+@@ -22,9 +22,11 @@
+ add_includedirs("third_party/json/single_include/")
+ 
+ target("_infinilm")
+-    add_packages("pybind11")
++    -- add_packages("pybind11")
++    add_includedirs("/usr/local/lib/python3.11/site-packages/torch/include", {public = true})
++    add_includedirs("/usr/local/include/python3.11", {public = true})
+     set_default(false)
+-    add_rules("python.module", {soabi = true})
++    add_rules("python.library", {soabi = true})
+     set_languages("cxx17")
+     set_kind("shared")
+ 
+--- a/xmake.lua
++++ b/xmake.lua
+@@ -1,4 +1,4 @@
+-add_requires("pybind11")
++-- add_requires("pybind11")
+ 
+ set_toolchains("gcc")
+ 
+@@ -22,9 +22,11 @@
+ add_includedirs("third_party/json/single_include/")
+ 
+ target("_infinilm")
+-    add_packages("pybind11")
++    -- add_packages("pybind11")
++    add_includedirs("/usr/local/lib/python3.11/site-packages/torch/include", {public = true})
++    add_includedirs("/usr/local/include/python3.11", {public = true})
+     set_default(false)
+-    add_rules("python.module", {soabi = true})
++    add_rules("python.library", {soabi = true})
+     set_languages("cxx17")
+     set_kind("shared")
+ 

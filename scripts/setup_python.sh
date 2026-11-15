@@ -123,62 +123,103 @@ python3 -m pip install --no-cache-dir --upgrade --target="$PL" \
 
 echo ""
 echo "=========================================================="
-echo " 步骤 5/5  源码编译 torchvision 0.24.0（官方要求）"
+echo " 步骤 5/5  torchvision（Qwen3-VL 的 processor 依赖）"
 echo "=========================================================="
-if python3 -c "import torchvision" 2>/dev/null; then
-  echo "  torchvision 已存在，跳过"
+if python3 -c "import torchvision; from torchvision.ops import nms; print('  torchvision', torchvision.__version__, 'nms OK')" 2>/dev/null; then
+  echo "  ✅ 已可用（含 nms），跳过"
 else
-  if [ ! -f "$SRC_TAR" ]; then
-    echo "  !! 缺少源码包 $SRC_TAR，跳过 torchvision"
+  echo "  当前 torchvision 缺失或不完整（processor 会变成 None）"
+  echo "  先尝试直接从厂商源安装 wheel："
+  python3 -m pip install --no-cache-dir --upgrade --target="$PL" \
+    --no-deps --no-compile -i "$VEND" "torchvision==0.24.0" 2>&1 | tail -6
+  if python3 -c "import torchvision; from torchvision.ops import nms" 2>/dev/null; then
+    echo "  ✅ 厂商源 wheel 安装成功"
   else
-    mkdir -p "$HOME/pkg"
-    tar -xzf "$SRC_TAR" -C "$HOME/pkg" torchvision-src
-    cd "$HOME/pkg/torchvision-src/vision-0.24.0" || exit 1
-    export BUILD_VERSION=0.24.0
-    export MAX_JOBS=32
-    export FORCE_CUDA=1
-    export TORCHVISION_USE_NVJPEG=0
-    export TORCHVISION_USE_VIDEO_CODEC=0
-    export TORCHVISION_USE_FFMPEG=0
-    echo "  编译中（约 4～5 分钟）..."
-    python3 setup.py bdist_wheel 2>&1 | tail -6
-    for w in dist/*.whl; do
-      [ -f "$w" ] || continue
-      python3 -m pip install --no-index --no-deps --target="$PL" --upgrade "$w" 2>&1 | tail -3
-    done
-    cd "$HERE" || exit 1
+    echo "  ⚠️ 厂商源没有可用的 torchvision wheel，需要源码编译"
+    TV_SRC_DIR=""
+    if [ -f "$SRC_TAR" ]; then
+      # 路径 A：平台本地源码包
+      mkdir -p "$HOME/pkg"
+      tar -xzf "$SRC_TAR" -C "$HOME/pkg" torchvision-src 2>/dev/null && \
+        TV_SRC_DIR="$HOME/pkg/torchvision-src/vision-0.24.0"
+    fi
+    if [ -z "$TV_SRC_DIR" ] || [ ! -d "$TV_SRC_DIR" ]; then
+      # 路径 B：从镜像下载（平台可访问 ghfast.top）
+      echo "  本地无 torchvision 源码，尝试从镜像下载 v0.24.0 ..."
+      mkdir -p "$HOME/pkg"
+      TV_URL="${TV_SRC_URL:-https://ghfast.top/https://github.com/pytorch/vision/archive/refs/tags/v0.24.0.tar.gz}"
+      if (cd "$HOME/pkg" && curl -fL --retry 2 -o vision.tar.gz "$TV_URL" 2>&1 | tail -3); then
+        tar -xzf "$HOME/pkg/vision.tar.gz" -C "$HOME/pkg" 2>/dev/null
+        TV_SRC_DIR="$HOME/pkg/vision-0.24.0"
+      fi
+    fi
+    if [ -z "$TV_SRC_DIR" ] || [ ! -d "$TV_SRC_DIR" ]; then
+      echo "  !! 无法获得 torchvision 0.24.0 源码（本地包与镜像均失败）"
+      echo "     补救：设置 SRC_TAR 指向含 torchvision-src 的压缩包，"
+      echo "           或设置 TV_SRC_URL 指向可访问的 v0.24.0 源码地址后重跑本脚本"
+      echo "     注意：torchvision 缺失会导致 Qwen3-VL processor 为 None，"
+      echo "           即使编译成功也无法运行推理"
+    else
+      echo "  源码目录: $TV_SRC_DIR"
+      cd "$TV_SRC_DIR" || exit 1
+      export BUILD_VERSION=0.24.0
+      export MAX_JOBS=32
+      export FORCE_CUDA=1
+      export TORCHVISION_USE_NVJPEG=0
+      export TORCHVISION_USE_VIDEO_CODEC=0
+      export TORCHVISION_USE_FFMPEG=0
+      echo "  源码编译中（约 4～5 分钟）..."
+      python3 setup.py bdist_wheel 2>&1 | tail -6
+      for w in dist/*.whl; do
+        [ -f "$w" ] || continue
+        python3 -m pip install --no-index --no-deps --target="$PL" --upgrade "$w" 2>&1 | tail -3
+      done
+      cd "$HERE" || exit 1
+      python3 -c "import torchvision; from torchvision.ops import nms; print('  ✅ 源码编译完成', torchvision.__version__)" 2>&1 | tail -2
+    fi
   fi
 fi
 
 echo ""
 echo "=========================================================="
-echo " 验证"
+echo " 安装完成 —— 关键依赖自检"
 echo "=========================================================="
 python3 - <<'PY'
-mods = ["torch","diffusers","transformers","tokenizers","huggingface_hub",
-        "httpx2","httpcore2","av","einops","torchvision","truststore"]
+import importlib, sys
+mods = ["diffusers", "transformers", "tokenizers", "huggingface_hub", "accelerate",
+        "av", "safetensors", "numpy", "torch", "torchvision", "skimage"]
 for m in mods:
     try:
-        mod = __import__(m)
-        v = getattr(mod, "__version__", "")
-        print(f"  OK  {m:16s} {v}")
+        mod = importlib.import_module(m)
+        print(f"  OK   {m:18s} {getattr(mod, '__version__', '?')}")
     except Exception as e:
-        print(f"  FAIL {m:16s} {type(e).__name__}: {str(e)[:60]}")
-
-print()
-for code, name in [
-    ("from diffusers.modular_pipelines.minimax_h3 import MiniMaxH3AudioReference", "MODULAR_H3_OK"),
-    ("from diffusers import MiniMaxH3Transformer3DModel", "H3_MODEL_OK"),
-    ("from transformers import Qwen3VLForConditionalGeneration", "QWEN3VL_OK"),
-    ("from huggingface_hub import resolve_revision", "RESOLVE_REV_OK"),
-    ("import torchvision.transforms.functional", "TV_TRANSFORMS_OK"),
-]:
-    try:
-        exec(code)
-        print("  " + name)
-    except Exception as e:
-        print(f"  {name.replace('_OK','_FAIL')} {type(e).__name__}: {str(e)[:80]}")
+        print(f"  FAIL {m:18s} {type(e).__name__}: {str(e)[:70]}")
+try:
+    import numpy, torch
+    torch.from_numpy(numpy.zeros(1))
+    print("  OK   from_numpy 可用")
+except Exception as e:
+    print(f"  FAIL from_numpy: {e}")
+try:
+    from torchvision.ops import nms
+    print("  OK   torchvision.ops.nms 可用（Qwen3-VL processor 需要）")
+except Exception as e:
+    print(f"  FAIL torchvision.ops.nms: {type(e).__name__}")
+try:
+    from skimage.metrics import structural_similarity
+    print("  OK   skimage SSIM 可用（官方 compare 需要）")
+except Exception as e:
+    print(f"  FAIL skimage: {type(e).__name__}")
 PY
+
 echo ""
-du -sh "$AFS" 2>/dev/null
-echo "依赖安装流程结束。"
+echo "  依赖目录: $PL"
+du -sh "$PL" 2>/dev/null
+echo ""
+echo "  下一步："
+echo "    bash scripts/build_infinicore.sh     # 约 23 分钟（自动创建 fakeflash 并传 --flash-attn）"
+echo "    bash scripts/build_infinilm.sh       # 约 7 分钟"
+echo "    bash scripts/run_compare.sh          # 官方评分脚本（约 10~22 分钟）"
+echo ""
+echo "  若上面自检有 FAIL，请先把对应的项修好再编译，否则运行时会报错。"
+
